@@ -1,0 +1,69 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 3. Primitive Definition
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // 2. Validation Blueprints
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email', 'displayName', 'photoURL', 'lastLogin']) 
+             && data.keys().size() == 5
+             && data.uid == request.auth.uid
+             && data.email is string && data.email.size() < 256
+             && data.displayName is string && data.displayName.size() < 128
+             && data.photoURL is string && data.photoURL.size() < 1024
+             && data.lastLogin is timestamp;
+    }
+
+    function isValidHistoryItem(data) {
+      return data.keys().hasAll(['text', 'sentiment', 'confidence', 'explanation', 'tokens', 'emoji', 'timestamp', 'userId'])
+             && data.keys().size() == 8
+             && data.userId == request.auth.uid
+             && data.text is string && data.text.size() <= 5000
+             && data.sentiment in ['positive', 'negative', 'neutral']
+             && data.confidence is number && data.confidence >= 0 && data.confidence <= 1
+             && data.explanation is string && data.explanation.size() <= 2000
+             && data.tokens is list && data.tokens.size() <= 10
+             && data.emoji is string && data.emoji.size() <= 16
+             && data.timestamp == request.time;
+    }
+
+    // 1. Matches
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidUser(incoming());
+      allow update: if isOwner(userId) && isValidUser(incoming()) 
+                      && incoming().diff(existing()).affectedKeys().hasOnly(['lastLogin', 'displayName', 'photoURL']);
+
+      match /history/{historyId} {
+        allow list: if isOwner(userId);
+        allow get: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidHistoryItem(incoming());
+        allow delete: if isOwner(userId);
+      }
+    }
+  }
+}
